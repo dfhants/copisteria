@@ -51,6 +51,37 @@ def test_aligned_staves_form_a_system_unaligned_do_not(monkeypatch):
     assert [sy.staves for sy in L.systems] == [[0, 1], [2]]
 
 
+def two_staves_page(between=None):
+    """A page of two staves, one above the other, their bar lines aligned; ``between``: what to draw in the gap."""
+    import numpy as np
+    page = np.full((420, 300), 255, np.uint8)
+    for top in (100, 220):
+        for line in range(5):
+            page[top + 10 * line: top + 10 * line + 2, 50:251] = 0
+    if between:
+        between(page)
+    return staff_row(100, [50, 150, 250]) + staff_row(220, [50, 150, 250]), page
+
+
+def test_a_faint_opening_line_joins_two_staves(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+
+    def systems(between=None):
+        dets, page = two_staves_page(between)
+        return [sy.staves for sy in front.build(dets, 300, 420, image=page).systems]
+
+    def line(page):                 # one anti-aliased pixel, far paler than the ink mask's threshold
+        page[100:262, 50] = 206
+
+    def patch(page):                # a stamp or watermark over the gap: grey, but not a line
+        page[142:220, 20:120] = 206
+
+    assert systems() == [[0], [1]]                                # white between them: two systems
+    assert systems(line) == [[0, 1]]
+    assert systems(patch) == [[0], [1]]
+
+
 def test_a_scans_frame_is_not_ink():
     import numpy as np
     page = np.full((400, 300), 230, np.uint8)
