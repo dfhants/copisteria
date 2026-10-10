@@ -246,3 +246,35 @@ def test_rhythm_decoding_keeps_plain_eighths():
     evs = [E(x=10 * k, kind="note", typ="eighth", dist=_dist(k / 2, tup_none=0.4)) for k in range(4)]
     write._decode_rhythm(evs)
     assert [e.tup for e in evs[:-1]] == ["none"] * 3
+
+
+def test_a_system_without_the_choir_is_written_into_the_piano(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    # a piano introduction (two braced staves), then the full system: a voice over the braced piano
+    dets = staff_row(100, [0, 150, 300]) + staff_row(180, [0, 150, 300]) + \
+        staff_row(400, [0, 100, 200, 300]) + staff_row(480, [0, 100, 200, 300]) + \
+        staff_row(560, [0, 100, 200, 300]) + \
+        [det("grpSym_brace", (0, 100, 8, 220)), det("grpSym_brace", (0, 480, 8, 600)),
+         det("note_quarter", (50, 115, 60, 125), staff_position=0),       # the introduction's right hand
+         det("note_quarter", (50, 415, 60, 425), staff_position=0)]       # the voice's first note
+    L = front.build(dets, 400, 700)
+    assert [len(sy.staves) for sy in L.systems] == [2, 3]
+    tok = {}
+    for s in L.syms:
+        real = {"p": 1.0, "det": 1.0, "ev": 0}
+        if s.fam == "measure":
+            tok[s.i] = {"real": real, "cls": {"v": "measure"}, "key": {"v": 0}, "time": {"v": "4/4"},
+                        "clef": {"v": "G2"}}
+        elif s.fam == "grpSym":
+            tok[s.i] = {"real": real, "cls": {"v": "grpSym_brace"}}
+        else:
+            tok[s.i] = {"real": real, "cls": {"v": "note_quarter"}, "dots": {"v": 0}, "pos": {"v": 0},
+                        "voice": {"v": 1}, "tup": {"v": "none"}, "alter": {"v": 0}, "grace": {"v": "none"},
+                        "chord": 0.0, "tie": 0.0}
+    root = ET.fromstring(write.write(_reading(L, tok)).split("\n", 2)[2])
+    voice, piano = root.findall("part")
+    assert piano.findtext("measure/attributes/staves") == "2" and voice.find("measure/attributes/staves") is None
+    sounding = lambda part: [m.find("note/pitch") is not None for m in part.findall("measure")]    # noqa: E731
+    assert sounding(piano) == [True, False, False, False, False]
+    assert sounding(voice) == [False, False, True, False, False]

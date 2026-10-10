@@ -138,6 +138,43 @@ class PartPlan:
     staves: list[int]                  # staff positions (within a system) of this part's staves
 
 
+def _at(sy, pos: int):
+    """The staff of ``sy`` at part position ``pos`` (a position of the fullest system), or None when the system
+    does not show it."""
+    i = pos - getattr(sy, "offset", 0)
+    return sy.staves[i] if 0 <= i < len(sy.staves) else None
+
+
+def _align_systems(rd: Reading, plans: list) -> None:
+    """Place every system that shows fewer staves than the fullest one against it. A choral score hides the choir
+    under a piano introduction and the piano under an a cappella passage: counted from the top, the piano's
+    staves would be written into the voices' parts. The braces decide: a system's braced pair sits where the
+    fullest system has one, and staves with no brace avoid its braced pairs. With nothing to tell, the top."""
+    L = rd.layout
+    K = max(len(sy.staves) for sy in L.systems)
+    braced = {pl.staves[0] for pl in plans if len(pl.staves) == 2}
+    braces = [s for si, s in enumerate(L.syms) if _real(rd, si) and _cls(rd, si) == "grpSym_brace"]
+    for sy in L.systems:
+        n = len(sy.staves)
+        own = set()
+        for s in braces:
+            cov = [i for i, k in enumerate(sy.staves)
+                   if s.box[1] - L.staves[k].sp <= L.staves[k].mid <= s.box[3] + L.staves[k].sp]
+            if len(cov) == 2 and cov[1] == cov[0] + 1:
+                own.add(cov[0])
+        best = (None, 0)
+        for off in range(K - n + 1):
+            score = 2 * sum(i + off in braced for i in own)
+            for p in braced:            # a braced pair of the fullest system shown without its brace, or cut in two
+                inside = (off <= p < off + n) + (off <= p + 1 < off + n)
+                score -= inside == 1 or (inside == 2 and p - off not in own)
+            if best[0] is None or score > best[0] or (score == best[0] and own):
+                best = (score, off)
+        sy.offset = best[1]
+        for i, k in enumerate(sy.staves):
+            L.staves[k].pos = i + sy.offset
+
+
 def _plan_parts(rd: Reading) -> list[PartPlan]:
     L = rd.layout
     if not L.systems:
@@ -623,9 +660,10 @@ def _next_system_first(L, notes_on, staff: int):
     if st.system + 1 >= len(L.systems):
         return None
     nxt = L.systems[st.system + 1]
-    if st.pos >= len(nxt.staves):
+    k = _at(nxt, st.pos)
+    if k is None:
         return None
-    evs = notes_on.get(nxt.staves[st.pos], [])
+    evs = notes_on.get(k, [])
     return evs[0] if evs else None
 
 
@@ -1018,7 +1056,7 @@ def _part_names(rd: Reading, plans: list, texts: list) -> list[str | None]:
     S = np.full((len(plans), len(cands)), -1e9)
     for n, pl in enumerate(plans):
         for sy in L.systems:
-            ks = [sy.staves[pos] for pos in pl.staves if pos < len(sy.staves)]
+            ks = [k for k in (_at(sy, pos) for pos in pl.staves) if k is not None]
             st = [L.staves[k] for k in ks]
             if not st:
                 continue
@@ -1048,6 +1086,8 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
     """``image``: the page (PIL image or grey array), for what is read off the ink here (dashes after words)."""
     L = rd.layout
     plans = _plan_parts(rd)
+    if L.systems:
+        _align_systems(rd, plans)
     root = ET.Element("score-partwise", version="4.0")
     texts = texts or []
     t_title = title or next((t["text"] for t in texts if t.get("role") == "pgHead_title"), None)
@@ -1096,11 +1136,11 @@ def write(rd: Reading, texts: list[dict] | None = None, title: str | None = None
                 sy = L.systems[s_i]
                 m = {"staves": [], "time": None, "key": None}
                 for k_i, pos in enumerate(pl.staves):
-                    if pos >= len(sy.staves):
+                    staff = _at(sy, pos)
+                    if staff is None:
                         m["staves"].append(None)
                         continue
-                    staff = sy.staves[pos]
-                    cols = sy.columns[pos]
+                    cols = sy.columns[pos - sy.offset]
                     bars = [j for j, cc in enumerate(cols) if cc == c]
                     if not bars:
                         m["staves"].append(None)
