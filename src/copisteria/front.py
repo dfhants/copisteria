@@ -460,11 +460,12 @@ def _faint_line(levels, x_lo: int, x_hi: int, y0: float, y1: float, sp: float) -
 def _ink_links(gray, syms: list[Sym], a: Staff, b: Staff, page_left: float, levels=None) -> tuple[float, float]:
     """(left, bars): how much of the gap between two staves a vertical ink run crosses at their left end (the
     system's opening line, brace or bracket -- the measure boxes start after the clef, so from the page's leftmost
-    staff start on), and the share of a's detected bar lines whose ink runs on into b. ``levels``: the page's grey
+    staff start on, and up to the later of the two staves' starts: a brace that touches a staff's lines moves that
+    staff's start out onto the brace), and the share of a's detected bar lines whose ink runs on into b. ``levels``: the page's grey
     levels, where a line too pale for the ink mask is looked for (_faint_line)."""
     sp = (a.sp + b.sp) / 2
     y0, y1 = a.y1 + 1, b.y0 - 1
-    lo, hi = int(min(page_left, a.x0, b.x0) - 3 * sp), int(min(a.x0, b.x0) + sp)
+    lo, hi = int(min(page_left, a.x0, b.x0) - 3 * sp), int(max(a.x0, b.x0) + sp)
     left = max((_ink_run(gray, x, y0, y1) for x in range(max(0, lo), hi + 1, 2)), default=0.0)
     if left < INK_LINK and levels is not None:
         left = max(left, _faint_line(levels, lo, hi, y0, y1, sp))

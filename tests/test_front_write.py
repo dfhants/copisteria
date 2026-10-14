@@ -82,6 +82,19 @@ def test_a_faint_opening_line_joins_two_staves(monkeypatch):
     assert systems(patch) == [[0], [1]]
 
 
+def test_the_opening_line_is_looked_for_up_to_the_later_staff_start(monkeypatch):
+    import numpy as np
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    page = np.full((420, 300), 255, np.uint8)
+    for top, start in ((100, 60), (220, 40)):     # the lower staff's lines run on into its brace: it starts early
+        for line in range(5):
+            page[top + 10 * line: top + 10 * line + 2, start:251] = 0
+    page[100:262, 60] = 0                         # the opening line, at the upper staff's start
+    dets = staff_row(100, [60, 150, 250]) + staff_row(220, [40, 150, 250])
+    assert [sy.staves for sy in front.build(dets, 300, 420, image=page).systems] == [[0, 1]]
+
+
 def test_a_scans_frame_is_not_ink():
     import numpy as np
     page = np.full((400, 300), 230, np.uint8)
