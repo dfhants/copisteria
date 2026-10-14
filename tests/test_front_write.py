@@ -51,6 +51,50 @@ def test_aligned_staves_form_a_system_unaligned_do_not(monkeypatch):
     assert [sy.staves for sy in L.systems] == [[0, 1], [2]]
 
 
+def two_staves_page(between=None):
+    """A page of two staves, one above the other, their bar lines aligned; ``between``: what to draw in the gap."""
+    import numpy as np
+    page = np.full((420, 300), 255, np.uint8)
+    for top in (100, 220):
+        for line in range(5):
+            page[top + 10 * line: top + 10 * line + 2, 50:251] = 0
+    if between:
+        between(page)
+    return staff_row(100, [50, 150, 250]) + staff_row(220, [50, 150, 250]), page
+
+
+def test_a_faint_opening_line_joins_two_staves(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+
+    def systems(between=None):
+        dets, page = two_staves_page(between)
+        return [sy.staves for sy in front.build(dets, 300, 420, image=page).systems]
+
+    def line(page):                 # one anti-aliased pixel, far paler than the ink mask's threshold
+        page[100:262, 50] = 206
+
+    def patch(page):                # a stamp or watermark over the gap: grey, but not a line
+        page[142:220, 20:120] = 206
+
+    assert systems() == [[0], [1]]                                # white between them: two systems
+    assert systems(line) == [[0, 1]]
+    assert systems(patch) == [[0], [1]]
+
+
+def test_the_opening_line_is_looked_for_up_to_the_later_staff_start(monkeypatch):
+    import numpy as np
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    page = np.full((420, 300), 255, np.uint8)
+    for top, start in ((100, 60), (220, 40)):     # the lower staff's lines run on into its brace: it starts early
+        for line in range(5):
+            page[top + 10 * line: top + 10 * line + 2, start:251] = 0
+    page[100:262, 60] = 0                         # the opening line, at the upper staff's start
+    dets = staff_row(100, [60, 150, 250]) + staff_row(220, [40, 150, 250])
+    assert [sy.staves for sy in front.build(dets, 300, 420, image=page).systems] == [[0, 1]]
+
+
 def test_a_scans_frame_is_not_ink():
     import numpy as np
     page = np.full((400, 300), 230, np.uint8)
@@ -202,3 +246,35 @@ def test_rhythm_decoding_keeps_plain_eighths():
     evs = [E(x=10 * k, kind="note", typ="eighth", dist=_dist(k / 2, tup_none=0.4)) for k in range(4)]
     write._decode_rhythm(evs)
     assert [e.tup for e in evs[:-1]] == ["none"] * 3
+
+
+def test_a_system_without_the_choir_is_written_into_the_piano(monkeypatch):
+    from copisteria import links
+    monkeypatch.setattr(links, "load", lambda: None)
+    # a piano introduction (two braced staves), then the full system: a voice over the braced piano
+    dets = staff_row(100, [0, 150, 300]) + staff_row(180, [0, 150, 300]) + \
+        staff_row(400, [0, 100, 200, 300]) + staff_row(480, [0, 100, 200, 300]) + \
+        staff_row(560, [0, 100, 200, 300]) + \
+        [det("grpSym_brace", (0, 100, 8, 220)), det("grpSym_brace", (0, 480, 8, 600)),
+         det("note_quarter", (50, 115, 60, 125), staff_position=0),       # the introduction's right hand
+         det("note_quarter", (50, 415, 60, 425), staff_position=0)]       # the voice's first note
+    L = front.build(dets, 400, 700)
+    assert [len(sy.staves) for sy in L.systems] == [2, 3]
+    tok = {}
+    for s in L.syms:
+        real = {"p": 1.0, "det": 1.0, "ev": 0}
+        if s.fam == "measure":
+            tok[s.i] = {"real": real, "cls": {"v": "measure"}, "key": {"v": 0}, "time": {"v": "4/4"},
+                        "clef": {"v": "G2"}}
+        elif s.fam == "grpSym":
+            tok[s.i] = {"real": real, "cls": {"v": "grpSym_brace"}}
+        else:
+            tok[s.i] = {"real": real, "cls": {"v": "note_quarter"}, "dots": {"v": 0}, "pos": {"v": 0},
+                        "voice": {"v": 1}, "tup": {"v": "none"}, "alter": {"v": 0}, "grace": {"v": "none"},
+                        "chord": 0.0, "tie": 0.0}
+    root = ET.fromstring(write.write(_reading(L, tok)).split("\n", 2)[2])
+    voice, piano = root.findall("part")
+    assert piano.findtext("measure/attributes/staves") == "2" and voice.find("measure/attributes/staves") is None
+    sounding = lambda part: [m.find("note/pitch") is not None for m in part.findall("measure")]    # noqa: E731
+    assert sounding(piano) == [True, False, False, False, False]
+    assert sounding(voice) == [False, False, True, False, False]

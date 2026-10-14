@@ -433,21 +433,49 @@ def _ink_run(mask, x: float, y0: float, y1: float, reach: int = 2) -> float:
     return float(mask[a:b, xa:xb].any(axis=1).mean())
 
 
-def _ink_links(gray, syms: list[Sym], a: Staff, b: Staff, page_left: float) -> tuple[float, float]:
+FAINT = 0.12                  # a faint line is this far from the paper toward the ink, at least
+
+
+def _faint_line(levels, x_lo: int, x_hi: int, y0: float, y1: float, sp: float) -> float:
+    """Share of the gap between two staves that a faint vertical line crosses at their left end. On a small render
+    the line that opens a system is one anti-aliased pixel wide and far paler than the ink mask's threshold, so a
+    choir and its piano read as two systems. The line counts only with paper on both sides of it: a grey patch
+    over the gap (a stamp, a watermark) is not a line, and neither is its edge."""
+    import numpy as np
+    H, W = levels.shape
+    ya, yb = max(0, int(round(y0))), min(H, int(round(y1)))
+    if yb - ya < 2:
+        return 0.0
+    paper, ink = np.percentile(levels, 50), np.percentile(levels, 1)
+    pale = levels[ya:yb] < paper - FAINT * max(1.0, paper - ink)
+    away = max(3, int(round(sp)))
+    best = 0.0
+    for x in range(max(away + 1, x_lo), min(W - away - 1, x_hi) + 1):
+        run = float(pale[:, x - 1:x + 2].any(axis=1).mean())
+        if run > best and all(float(pale[:, c - 1:c + 1].any(axis=1).mean()) < 0.5 for c in (x - away, x + away)):
+            best = run
+    return best
+
+
+def _ink_links(gray, syms: list[Sym], a: Staff, b: Staff, page_left: float, levels=None) -> tuple[float, float]:
     """(left, bars): how much of the gap between two staves a vertical ink run crosses at their left end (the
     system's opening line, brace or bracket -- the measure boxes start after the clef, so from the page's leftmost
-    staff start on), and the share of a's detected bar lines whose ink runs on into b."""
+    staff start on, and up to the later of the two staves' starts: a brace that touches a staff's lines moves that
+    staff's start out onto the brace), and the share of a's detected bar lines whose ink runs on into b. ``levels``: the page's grey
+    levels, where a line too pale for the ink mask is looked for (_faint_line)."""
     sp = (a.sp + b.sp) / 2
     y0, y1 = a.y1 + 1, b.y0 - 1
-    lo, hi = int(min(page_left, a.x0, b.x0) - 3 * sp), int(min(a.x0, b.x0) + sp)
+    lo, hi = int(min(page_left, a.x0, b.x0) - 3 * sp), int(max(a.x0, b.x0) + sp)
     left = max((_ink_run(gray, x, y0, y1) for x in range(max(0, lo), hi + 1, 2)), default=0.0)
+    if left < INK_LINK and levels is not None:
+        left = max(left, _faint_line(levels, lo, hi, y0, y1, sp))
     lines = [s for s in syms if s.fam == "barLine" and s.p >= 0.5 and s.staff < 0 and
              a.y0 - sp <= s.cy <= a.y1 + sp and max(a.x0, b.x0) <= s.cx <= min(a.x1, b.x1)]
     bars = (sum(_ink_run(gray, s.cx, y0, y1) >= INK_LINK for s in lines) / len(lines)) if lines else 0.0
     return left, bars
 
 
-def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False) -> list[System]:
+def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False, levels=None) -> list[System]:
     from . import links
     w = links.load()
     if w is not None and len(staves) > 1:
@@ -466,7 +494,7 @@ def _systems(syms: list[Sym], staves: list[Staff], gray=None, ink: bool = False)
         # bracket the detector saw over both staves joins them whatever the ink
         page_left = min(st.x0 for st in staves)
         for k in range(1, len(staves)):
-            left, bars = _ink_links(gray, syms, staves[k - 1], staves[k], page_left)
+            left, bars = _ink_links(gray, syms, staves[k - 1], staves[k], page_left, levels)
             if left >= INK_LINK or bars >= 0.5:
                 decided[k - 1] = True
             elif left < INK_SPLIT and bars < 0.1:
@@ -870,12 +898,12 @@ def build(dets: list[dict], width: float, height: float, image=None, cands: list
     mask = ink_mask(gray) if gray is not None else None
     ink_path = bool(staves)
     if staves:
-        systems = _systems(syms, staves, mask, ink=True)
+        systems = _systems(syms, staves, mask, ink=True, levels=gray)
     else:
         staves = _staves(syms)
         _fill_gaps(syms, staves)
         _snap_bars(syms, staves)
-        systems = _systems(syms, staves, mask)
+        systems = _systems(syms, staves, mask, levels=gray)
     _assign(syms, staves)
     if cands:
         new = []
